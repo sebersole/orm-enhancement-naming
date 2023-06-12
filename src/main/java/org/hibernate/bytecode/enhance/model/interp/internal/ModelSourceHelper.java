@@ -11,10 +11,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 
 import org.hibernate.HibernateException;
 import org.hibernate.bytecode.enhance.model.AccessTypePlacementException;
+import org.hibernate.bytecode.enhance.model.ByteBuddyModelException;
 import org.hibernate.bytecode.enhance.model.interp.spi.ManagedTypeDescriptor;
 import org.hibernate.bytecode.enhance.model.interp.spi.ManagedTypeModelContext;
 import org.hibernate.bytecode.enhance.model.interp.spi.PersistentAttribute;
@@ -23,6 +23,7 @@ import org.hibernate.bytecode.enhance.model.source.spi.ClassDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.FieldDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.MemberDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.MethodDetails;
+import org.hibernate.internal.util.collections.CollectionHelper;
 
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
@@ -62,99 +63,231 @@ public class ModelSourceHelper {
 				contextAccessType
 		);
 
-		MODEL_SOURCE_LOGGER.debugf( "Building PersistentAttribute list for %s using %s class-level access", declaringType.getName(), classLevelAccessType );
+		MODEL_SOURCE_LOGGER.debugf( "Building PersistentAttribute list : %s;  class-level access : %s", declaringType.getName(), classLevelAccessType );
 
-		final LinkedHashMap<String, FieldDetails> fieldsByName = new LinkedHashMap<>();
-		final LinkedHashMap<String, MethodDetails> gettersByAttributeName = new LinkedHashMap<>();
-		final LinkedHashMap<String, MethodDetails> settersByAttributeName = new LinkedHashMap<>();
-
-		final LinkedHashMap<String, MemberDetails> attributeMembers = collectBackingMembers(
+		// Categorize all the members
+		final LinkedHashMap<String,FieldDetails> allFields = new LinkedHashMap<>();
+		final LinkedHashMap<String,FieldDetails> backingFields = new LinkedHashMap<>();
+		final LinkedHashMap<String,MethodDetails> backingGetters = new LinkedHashMap<>();
+		categorizeMembers(
 				declaringType,
 				classLevelAccessType,
-				fieldsByName::put,
-				gettersByAttributeName::put,
-				settersByAttributeName::put
+				allFields::put,
+				(attributeName, backingField) -> {
+					final MemberDetails previous = backingFields.put(
+							backingField.resolveAttributeName(),
+							backingField
+					);
+					if ( previous != null && previous != backingField) {
+						throw new HibernateException( "Multiple backing members found : " + backingField.resolveAttributeName() );
+					}
+				},
+				(attributeName, backingMethod) -> {
+					final MemberDetails previous = backingGetters.put(
+							backingMethod.resolveAttributeName(),
+							backingMethod
+					);
+					if ( previous != null && previous != backingMethod ) {
+						throw new HibernateException( "Multiple backing members found : " + backingMethod.resolveAttributeName() );
+					}
+				}
 		);
 
-		final List<PersistentAttribute> attributes = arrayList( attributeMembers.size() );
-		ClassNode classNode = null;
-		Map<String, MethodNode> getterMethodNodeMap = null;
-		for ( Map.Entry<String, MemberDetails> membersEntry : attributeMembers.entrySet() ) {
-			final PersistentAttribute attributeDescriptor = buildPersistentAttribute(
-					membersEntry.getKey(),
-					membersEntry.getValue(),
-					fieldsByName,
-					gettersByAttributeName,
-					settersByAttributeName,
-					declaringType,
-					processingContext
-			);
-			attributes.add( attributeDescriptor );
-
-			if ( attributeDescriptor.getUnderlyingField() == null ) {
-				// we need the field,  but it is not known likely due to a naming mismatch (see HHH-16572).
-				// locate it using ASM
-				assert attributeDescriptor.getUnderlyingGetter() != null;
-				if ( classNode == null ) {
-					classNode = buildClassNode( declaringType, processingContext );
-					getterMethodNodeMap = buildGetterMethodNodeMap( declaringType, classNode, processingContext );
-				}
-
-				final FieldDetails backingField = locateBackingField(
-						attributeDescriptor,
-						getterMethodNodeMap,
-						fieldsByName
-				);
-				attributeDescriptor.setUnderlyingField( backingField );
-			}
-		}
+		final List<PersistentAttribute> attributes = arrayList( backingGetters.size() + backingFields.size() );
+		processBackingGetters( backingGetters, backingFields, allFields, attributes::add, declaringType, processingContext );
+		processBackingFields( backingFields, attributes::add, declaringType, processingContext );
 
 		return attributes;
 	}
 
-	private static FieldDetails locateBackingField(
-			PersistentAttribute attributeDescriptor,
-			Map<String, MethodNode> getterMethodNodeMap,
-			Map<String, FieldDetails> fieldDetailsMap) {
-		final MethodNode methodNode = getterMethodNodeMap.get( attributeDescriptor.getName() );
+	@FunctionalInterface
+	private interface PersistentAttributeConsumer {
+
+		void accept(PersistentAttribute attribute);
+	}
+
+	private static void processBackingGetters(
+			Map<String, MethodDetails> backingGetters,
+			Map<String, FieldDetails> backingFields,
+			Map<String,FieldDetails> allFields,
+			PersistentAttributeConsumer attributeCollector,
+			ClassDetails declaringType,
+			ManagedTypeModelContext processingContext) {
+		if ( backingGetters.isEmpty() ) {
+			return;
+		}
+
+		final AsmModelNodesRef asmModelNodesRef = new AsmModelNodesRef( declaringType, processingContext );
+
+		backingGetters.forEach( (attributeName, getterDetails) -> {
+			final FieldDetails underlyingField = determineGottenField(
+					getterDetails,
+					backingFields,
+					allFields,
+					asmModelNodesRef,
+					processingContext
+			);
+
+			attributeCollector.accept( new PersistentAttributeImpl(
+					attributeName,
+					AccessType.PROPERTY,
+					getterDetails,
+					underlyingField
+			) );
+		} );
+	}
+
+	private static void processBackingFields(
+			LinkedHashMap<String, FieldDetails> backingFields,
+			PersistentAttributeConsumer attributeCollector,
+			ClassDetails declaringType,
+			ManagedTypeModelContext processingContext) {
+		if ( backingFields.isEmpty() ) {
+			return;
+		}
+
+		backingFields.forEach( (attributeName, fieldDetails) -> {
+			attributeCollector.accept( new PersistentAttributeImpl(
+					attributeName,
+					AccessType.FIELD,
+					fieldDetails,
+					fieldDetails
+			) );
+		} );
+	}
+
+	private static FieldDetails determineGottenField(
+			MethodDetails getterDetails,
+			Map<String,FieldDetails> backingFields,
+			Map<String,FieldDetails> allFields,
+			AsmModelNodesRef asmModelNodesRef,
+			ManagedTypeModelContext processingContext) {
+		final FieldDetails simpleMatch = allFields.get( getterDetails.getSimpleMatchFieldName() );
+		if ( simpleMatch != null ) {
+			return simpleMatch;
+		}
+
+		// we need to dig a littler deeper and look at the bytecode instructions
+		final Map<String, MethodNode> getterMethodNodeMap = asmModelNodesRef.getGetterMethodNodeMap();
+		final MethodNode methodNode = getterMethodNodeMap.get( getterDetails.getName() );
 
 		// assume the final GETFIELD instruction is the backing field
+		FieldDetails returnedField = null;
 		for ( int i = methodNode.instructions.size() - 1; i >= 0; i-- ) {
 			final AbstractInsnNode instruction = methodNode.instructions.get( i );
 			if ( instruction.getOpcode() == Opcodes.GETFIELD ) {
 				final FieldInsnNode getFieldInstruction = (FieldInsnNode) instruction;
 				final String returnedFieldName = getFieldInstruction.name;
-				return fieldDetailsMap.get( returnedFieldName );
+				returnedField = allFields.get( returnedFieldName );
+				break;
 			}
 		}
 
-		return null;
+		if ( returnedField != null ) {
+			backingFields.remove( returnedField.resolveAttributeName() );
+			return returnedField;
+		}
+
+		throw new ByteBuddyModelException( "Could not locate underlying field : " + getterDetails.getName() );
 	}
 
-	private static Map<String,MethodNode> buildGetterMethodNodeMap(
+	private static class AsmModelNodesRef {
+		private final ClassDetails declaringType;
+		private final ManagedTypeModelContext processingContext;
+
+		private ClassNode classNode = null;
+		private Map<String, MethodNode> getterMethodNodeMap = null;
+
+		private AsmModelNodesRef(ClassDetails declaringType, ManagedTypeModelContext processingContext) {
+			this.declaringType = declaringType;
+			this.processingContext = processingContext;
+		}
+
+		public ClassNode getClassNode() {
+			if ( classNode == null ) {
+				classNode = buildClassNode( declaringType, processingContext );
+			}
+			return classNode;
+		}
+
+		public Map<String, MethodNode> getGetterMethodNodeMap() {
+			if ( getterMethodNodeMap == null ) {
+				getterMethodNodeMap = extractGetterMethodNodeMap( declaringType, getClassNode(), processingContext );
+			}
+			return getterMethodNodeMap;
+		}
+	}
+
+	/**
+	 * Accepts a {@linkplain MemberDetails member} which is the backing for a persistent attribute.
+	 *
+	 * @param <M> The specific type accepted
+	 */
+	public interface BackingMemberConsumer<M extends MemberDetails> {
+		void accept(String attributeName, M memberDetails);
+	}
+
+	/**
+	 * Collects the members (field or getter) which is "backing" the attribute, keyed by the attribute name
+	 *
+	 * @param declaringType The type descriptor from which to access field and method descriptors
+	 * @param classLevelAccessType The implicit access type in effect for the declaring type
+	 * @param backingFieldCollector Collects {@linkplain FieldDetails fields} which define an attribute
+	 * @param backingGetterCollector Collects {@linkplain MethodDetails getters} which define an attribute
+	 */
+	public static void categorizeMembers(
 			ClassDetails declaringType,
-			ClassNode classNode,
-			ManagedTypeModelContext processingContext) {
-		final LinkedHashMap<String,MethodNode> methodNodesByAttributeName = new LinkedHashMap<>();
-		final LinkedHashMap<String,MethodDetails> getterMethodDetailsByName = new LinkedHashMap<>();
-		for ( MethodDetails method : declaringType.getMethods() ) {
-			if ( method.getMethodKind() != MethodDetails.MethodKind.GETTER ) {
+			AccessType classLevelAccessType,
+			BiConsumer<String,FieldDetails> allFieldsCollector,
+			BackingMemberConsumer<FieldDetails> backingFieldCollector,
+			BackingMemberConsumer<MethodDetails> backingGetterCollector) {
+		assert classLevelAccessType != null;
+
+		for ( int i = 0; i < declaringType.getFields().size(); i++ ) {
+			final FieldDetails fieldDetails = declaringType.getFields().get( i );
+			allFieldsCollector.accept( fieldDetails.getName(), fieldDetails );
+
+			if ( fieldDetails.hasAnnotation( Transient.class ) ) {
 				continue;
 			}
 
-			getterMethodDetailsByName.put( method.getName(), method );
+			final Access localAccess = fieldDetails.getAnnotation( Access.class );
+			if ( localAccess != null ) {
+				// the field contained `@Access`
+				validateAttributeLevelAccess( fieldDetails, localAccess.value(), declaringType );
+
+				if ( localAccess.value() == AccessType.FIELD ) {
+					backingFieldCollector.accept( fieldDetails.resolveAttributeName(), fieldDetails );
+				}
+			}
+			else if ( classLevelAccessType == AccessType.FIELD ) {
+				backingFieldCollector.accept( fieldDetails.resolveAttributeName(), fieldDetails );
+			}
 		}
 
-		for ( MethodNode methodNode : classNode.methods ) {
-			final MethodDetails getterMethodDetails = getterMethodDetailsByName.get( methodNode.name );
-			if ( getterMethodDetails == null ) {
+		for ( int i = 0; i < declaringType.getMethods().size(); i++ ) {
+			final MethodDetails methodDetails = declaringType.getMethods().get( i );
+			if ( methodDetails.getMethodKind() != MethodDetails.MethodKind.GETTER ) {
 				continue;
 			}
 
-			methodNodesByAttributeName.put( getterMethodDetails.resolveAttributeName(), methodNode );
-		}
+			if ( methodDetails.hasAnnotation( Transient.class ) ) {
+				continue;
+			}
 
-		return methodNodesByAttributeName;
+			final Access localAccess = methodDetails.getAnnotation( Access.class );
+			if ( localAccess != null ) {
+				// the method contained `@Access`
+				validateAttributeLevelAccess( methodDetails, localAccess.value(), declaringType );
+
+				if ( localAccess.value() == AccessType.FIELD ) {
+					backingGetterCollector.accept( methodDetails.resolveAttributeName(), methodDetails );
+				}
+			}
+			else if ( classLevelAccessType == AccessType.PROPERTY ) {
+				backingGetterCollector.accept( methodDetails.resolveAttributeName(), methodDetails );
+			}
+		}
 	}
 
 	private static ClassNode buildClassNode(ClassDetails declaringType, ManagedTypeModelContext processingContext) {
@@ -173,41 +306,27 @@ public class ModelSourceHelper {
 		}
 	}
 
-	private static PersistentAttribute buildPersistentAttribute(
-			String attributeName,
-			MemberDetails backingMemberDetails,
-			Map<String,FieldDetails> fieldsByName,
-			Map<String,MethodDetails> gettersByAttributeName,
-			Map<String,MethodDetails> settersByAttributeName,
+	private static Map<String,MethodNode> extractGetterMethodNodeMap(
 			ClassDetails declaringType,
+			ClassNode classNode,
 			ManagedTypeModelContext processingContext) {
-		assert backingMemberDetails.getKind() == AnnotationTarget.Kind.FIELD
-				|| backingMemberDetails.getKind() == AnnotationTarget.Kind.METHOD;
+		final LinkedHashMap<String, MethodNode> getterNodeMap = new LinkedHashMap<>();
+		for ( int i = 0; i < classNode.methods.size(); i++ ) {
+			final MethodNode methodNode = classNode.methods.get( i );
+			if ( CollectionHelper.isNotEmpty( methodNode.parameters ) ) {
+				//can't be a getter - has arguments
+				continue;
+			}
 
-		if ( backingMemberDetails.getKind() == AnnotationTarget.Kind.FIELD ) {
-			final PersistentAttributeFactory builder = new PersistentAttributeFactory(
-					declaringType,
-					attributeName,
-					AccessType.FIELD,
-					(FieldDetails) backingMemberDetails,
-					gettersByAttributeName.get( attributeName ),
-					settersByAttributeName.get( attributeName )
-			);
+			if ( !methodNode.name.startsWith( "get" ) && !methodNode .name.startsWith( "is" ) ) {
+				// can't be a getter - name does not match get/is
+				continue;
+			}
 
-			return builder.buildPersistentAttribute();
+			getterNodeMap.put( methodNode.name, methodNode );
 		}
 
-		assert backingMemberDetails.getKind() == AnnotationTarget.Kind.METHOD;
-		final PersistentAttributeFactory builder = new PersistentAttributeFactory(
-				declaringType,
-				attributeName,
-				AccessType.PROPERTY,
-				fieldsByName.get( attributeName ),
-				(MethodDetails) backingMemberDetails,
-				settersByAttributeName.get( attributeName )
-		);
-
-		return builder.buildPersistentAttribute();
+		return getterNodeMap;
 	}
 
 	public static AccessType determineClassLevelAccessType(
@@ -239,89 +358,6 @@ public class ModelSourceHelper {
 		return contextAccessType == null ? AccessType.PROPERTY : contextAccessType;
 	}
 
-	public static LinkedHashMap<String,MemberDetails> collectBackingMembers(
-			ClassDetails declaringType,
-			AccessType classLevelAccessType,
-			BiConsumer<String,FieldDetails> fieldCollector,
-			BiConsumer<String,MethodDetails> getterCollector,
-			BiConsumer<String,MethodDetails> setterCollector) {
-		assert classLevelAccessType != null;
-
-		final LinkedHashMap<String,MemberDetails> attributeMembers = new LinkedHashMap<>();
-		final Consumer<MemberDetails> backingMemberConsumer = (memberDetails) -> {
-			final MemberDetails previous = attributeMembers.put(
-					memberDetails.resolveAttributeName(),
-					memberDetails
-			);
-			if ( previous != null && previous != memberDetails) {
-				throw new HibernateException( "Multiple backing members found : " + memberDetails.resolveAttributeName() );
-			}
-		};
-
-		collectAttributeLevelAccessMembers( declaringType, backingMemberConsumer, fieldCollector, getterCollector, setterCollector );
-		collectClassLevelAccessMembers( classLevelAccessType, declaringType, backingMemberConsumer );
-
-		return attributeMembers;
-	}
-
-	/**
-	 * Perform an action for each member which locally define an `AccessType` via `@Access`.
-	 * <p/>
-	 * This method visits each method and field on the type, so we use this as an opportunity
-	 * to collect all fields, getters and setters for use later in building PersistentAttribute
-	 * references
-	 *
-	 * @param declaringType The declaring type for the members to process
-	 * @param backingMemberConsumer Callback for members with a local `@Access`
-	 */
-	private static void collectAttributeLevelAccessMembers(
-			ClassDetails declaringType,
-			Consumer<MemberDetails> backingMemberConsumer,
-			BiConsumer<String, FieldDetails> fieldCollector,
-			BiConsumer<String, MethodDetails> getterCollector,
-			BiConsumer<String, MethodDetails> setterCollector) {
-		for ( FieldDetails fieldDetails : declaringType.getFields() ) {
-			fieldCollector.accept( fieldDetails.resolveAttributeName(), fieldDetails );
-
-			if ( fieldDetails.hasAnnotation( Transient.class ) ) {
-				continue;
-			}
-
-			final Access localAccess = fieldDetails.getAnnotation( Access.class );
-			if ( localAccess == null ) {
-				continue;
-			}
-
-			validateAttributeLevelAccess( fieldDetails, localAccess.value(), declaringType );
-
-			backingMemberConsumer.accept( fieldDetails );
-		}
-
-		for ( MethodDetails methodDetails : declaringType.getMethods() ) {
-			if ( methodDetails.getMethodKind() == MethodDetails.MethodKind.GETTER ) {
-				getterCollector.accept( methodDetails.resolveAttributeName(), methodDetails );
-			}
-			else {
-				if ( methodDetails.getMethodKind() != MethodDetails.MethodKind.SETTER ) {
-					setterCollector.accept( methodDetails.resolveAttributeName(), methodDetails );
-				}
-				continue;
-			}
-
-			if ( methodDetails.hasAnnotation( Transient.class ) ) {
-				continue;
-			}
-
-			final Access localAccess = methodDetails.getAnnotation( Access.class );
-			if ( localAccess == null ) {
-				continue;
-			}
-
-			validateAttributeLevelAccess( methodDetails, localAccess.value(), declaringType );
-			backingMemberConsumer.accept( methodDetails );
-		}
-	}
-
 	private static void validateAttributeLevelAccess(
 			MemberDetails annotationTarget,
 			AccessType attributeAccessType,
@@ -338,60 +374,4 @@ public class ModelSourceHelper {
 		}
 	}
 
-	/**
-	 * Perform an action for each member which matches the class-level access-type
-	 *
-	 * @param declaringType The declaring type for the members to process
-	 * @param backingMemberConsumer Callback for members with a local `@Access`
-	 */
-	private static void collectClassLevelAccessMembers(
-			AccessType classLevelAccessType,
-			ClassDetails declaringType,
-			Consumer<MemberDetails> backingMemberConsumer) {
-		if ( classLevelAccessType == AccessType.FIELD ) {
-			processClassLevelAccessFields( declaringType, backingMemberConsumer );
-		}
-		else {
-			processClassLevelAccessMethods( declaringType, backingMemberConsumer );
-		}
-	}
-
-	private static void processClassLevelAccessFields(
-			ClassDetails declaringType,
-			Consumer<MemberDetails> backingMemberConsumer) {
-		for ( FieldDetails fieldDetails : declaringType.getFields() ) {
-			if ( fieldDetails.hasAnnotation( Transient.class ) ) {
-				continue;
-			}
-
-			if ( fieldDetails.hasAnnotation( Access.class ) ) {
-				// it would have been handled in #collectAttributeLevelAccessMembers
-				continue;
-			}
-
-			backingMemberConsumer.accept( fieldDetails );
-		}
-	}
-
-	private static void processClassLevelAccessMethods(
-			ClassDetails declaringType,
-			Consumer<MemberDetails> backingMemberConsumer) {
-		for ( MethodDetails methodDetails : declaringType.getMethods() ) {
-			if ( methodDetails.getMethodKind() != MethodDetails.MethodKind.GETTER ) {
-				continue;
-			}
-
-			if ( methodDetails.hasAnnotation( Transient.class ) ) {
-				continue;
-			}
-
-			if ( methodDetails.hasAnnotation( Access.class ) ) {
-				// it would have been handled in #collectAttributeLevelAccessMembers
-				continue;
-			}
-
-			backingMemberConsumer.accept( methodDetails );
-		}
-
-	}
 }

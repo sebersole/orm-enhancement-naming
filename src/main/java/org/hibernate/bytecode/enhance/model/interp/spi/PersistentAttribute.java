@@ -8,26 +8,35 @@ package org.hibernate.bytecode.enhance.model.interp.spi;
 
 import org.hibernate.bytecode.enhance.model.source.spi.FieldDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.MemberDetails;
-import org.hibernate.bytecode.enhance.model.source.spi.MethodDetails;
 
+import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 
 /**
+ * Details about a persistent attribute
+ *
  * @author Steve Ebersole
  */
 public interface PersistentAttribute {
+	/**
+	 * The name of the persistent attribute
+	 */
 	String getName();
 
+	/**
+	 * The type of access for the attribute
+	 */
 	AccessType getAccessType();
 
-	boolean isAccessTypeExplicit();
+	/**
+	 * Whether the attribute explicitly specified the {@linkplain #getAccessType() access type}, i.e.
+	 * whether the {@linkplain #getBackingMember() backing member} contains {@linkplain jakarta.persistence.Access @Access}
+	 */
+	default boolean isAccessTypeExplicit() {
+		return getBackingMember().hasAnnotation( Access.class );
+	}
 
-	MemberDetails getUnderlyingMember();
+	MemberDetails getBackingMember();
 
 	FieldDetails getUnderlyingField();
-	void setUnderlyingField(FieldDetails underlyingField);
-
-	MethodDetails getUnderlyingGetter();
-
-	MethodDetails getUnderlyingSetter();
 }

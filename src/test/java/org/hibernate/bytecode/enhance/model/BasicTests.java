@@ -5,7 +5,6 @@ import org.hibernate.bytecode.enhance.model.interp.spi.ManagedTypeDescriptor;
 import org.hibernate.bytecode.enhance.model.interp.spi.PersistentAttribute;
 import org.hibernate.bytecode.enhance.model.source.internal.ClassFileLocatorImpl;
 import org.hibernate.bytecode.enhance.model.source.internal.ModelProcessingContextImpl;
-import org.hibernate.bytecode.enhance.model.source.spi.ClassDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.FieldDetails;
 import org.hibernate.bytecode.enhance.model.source.spi.MethodDetails;
 
@@ -42,18 +41,16 @@ public class BasicTests {
 		final PersistentAttribute idAttribute = managedTypeDescriptor.getPersistentAttribute( "id" );
 		assertThat( idAttribute ).isNotNull();
 		assertThat( idAttribute.getAccessType() ).isEqualTo( AccessType.FIELD );
-		assertThat( idAttribute.getUnderlyingMember() ).isInstanceOf( FieldDetails.class );
+		assertThat( idAttribute.getBackingMember() ).isInstanceOf( FieldDetails.class );
 		assertThat( idAttribute.getUnderlyingField() ).isNotNull();
-		assertThat( idAttribute.getUnderlyingGetter() ).isNull();
-		assertThat( idAttribute.getUnderlyingSetter() ).isNull();
+		assertThat( idAttribute.getBackingMember() ).isSameAs( idAttribute.getUnderlyingField() );
 
 		final PersistentAttribute nameAttribute = managedTypeDescriptor.getPersistentAttribute( "name" );
 		assertThat( nameAttribute ).isNotNull();
 		assertThat( nameAttribute.getAccessType() ).isEqualTo( AccessType.FIELD );
-		assertThat( nameAttribute.getUnderlyingMember() ).isInstanceOf( FieldDetails.class );
+		assertThat( nameAttribute.getBackingMember() ).isInstanceOf( FieldDetails.class );
 		assertThat( nameAttribute.getUnderlyingField() ).isNotNull();
-		assertThat( nameAttribute.getUnderlyingGetter() ).isNull();
-		assertThat( nameAttribute.getUnderlyingSetter() ).isNull();
+		assertThat( nameAttribute.getBackingMember() ).isSameAs( nameAttribute.getUnderlyingField() );
 	}
 
 	@Test
@@ -77,17 +74,13 @@ public class BasicTests {
 		final PersistentAttribute idAttribute = managedTypeDescriptor.getPersistentAttribute( "id" );
 		assertThat( idAttribute ).isNotNull();
 		assertThat( idAttribute.getAccessType() ).isEqualTo( AccessType.PROPERTY );
-		assertThat( idAttribute.getUnderlyingMember() ).isInstanceOf( MethodDetails.class );
+		assertThat( idAttribute.getBackingMember() ).isInstanceOf( MethodDetails.class );
 		assertThat( idAttribute.getUnderlyingField() ).isNotNull();
-		assertThat( idAttribute.getUnderlyingGetter() ).isNotNull();
-		assertThat( idAttribute.getUnderlyingSetter() ).isNotNull();
 
 		final PersistentAttribute nameAttribute = managedTypeDescriptor.getPersistentAttribute( "name" );
 		assertThat( nameAttribute ).isNotNull();
 		assertThat( nameAttribute.getAccessType() ).isEqualTo( AccessType.PROPERTY );
-		assertThat( nameAttribute.getUnderlyingMember() ).isInstanceOf( MethodDetails.class );
+		assertThat( nameAttribute.getBackingMember() ).isInstanceOf( MethodDetails.class );
 		assertThat( nameAttribute.getUnderlyingField() ).isNotNull();
-		assertThat( nameAttribute.getUnderlyingGetter() ).isNotNull();
-		assertThat( nameAttribute.getUnderlyingSetter() ).isNotNull();
 	}
 }

@@ -28,4 +28,6 @@ public interface MemberDetails extends AnnotationTarget {
 	 * For members representing attributes, determine the attribute name
 	 */
 	String resolveAttributeName();
+
+	String getSimpleMatchFieldName();
 }

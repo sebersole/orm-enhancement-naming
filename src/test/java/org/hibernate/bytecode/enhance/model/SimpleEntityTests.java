@@ -49,12 +49,13 @@ public class SimpleEntityTests {
 			assertThat( classDetails.getMethods() ).hasSize( 7 );
 			assertThat( collectGettersAndSetters( classDetails ) ).hasSize( 4 );
 
-			final LinkedHashMap<String, MemberDetails> backingMembers = ModelSourceHelper.collectBackingMembers(
+			final LinkedHashMap<String, MemberDetails> backingMembers = new LinkedHashMap<>();
+			ModelSourceHelper.categorizeMembers(
 					classDetails,
 					AccessType.PROPERTY,
 					(s, fieldDetails) -> {},
-					(s, methodDetails) -> {},
-					(s, methodDetails) -> {}
+					backingMembers::put,
+					backingMembers::put
 			);
 
 			assertThat( backingMembers ).hasSize( 2 );

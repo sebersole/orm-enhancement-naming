@@ -8,6 +8,8 @@ package org.hibernate.bytecode.enhance.model.source.spi;
 
 import java.beans.Introspector;
 
+import org.hibernate.bytecode.enhance.model.ByteBuddyModelException;
+
 /**
  * Models a "{@linkplain java.lang.reflect.Method method}" in a {@link ClassDetails}
  *
@@ -30,5 +32,21 @@ public interface MethodDetails extends MemberDetails {
 	@Override
 	default String resolveAttributeName() {
 		return Introspector.decapitalize( resolveAttributeMethodNameStem() );
+	}
+
+	@Override
+	default String getSimpleMatchFieldName() {
+		assert getMethodKind() == MethodKind.GETTER;
+		assert getName() != null;
+
+		final String methodName = getName();
+		if ( methodName.startsWith( "is" ) ) {
+			return Introspector.decapitalize( methodName.substring( 2 ) );
+		}
+		else if ( methodName.startsWith( "get" ) ) {
+			return Introspector.decapitalize( methodName.substring( 3 ) );
+		}
+
+		throw new ByteBuddyModelException( "Unable to determine simple field name from getter " + methodName );
 	}
 }

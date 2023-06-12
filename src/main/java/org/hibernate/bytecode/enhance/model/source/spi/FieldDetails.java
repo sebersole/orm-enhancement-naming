@@ -21,4 +21,9 @@ public interface FieldDetails extends MemberDetails {
 	default String resolveAttributeName() {
 		return getName();
 	}
+
+	@Override
+	default String getSimpleMatchFieldName() {
+		return getName();
+	}
 }

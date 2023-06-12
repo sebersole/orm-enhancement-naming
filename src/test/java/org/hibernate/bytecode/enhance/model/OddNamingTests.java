@@ -90,23 +90,15 @@ public class OddNamingTests {
 				primaryName = persistentAttributes.get( 1 );
 			}
 
-			assertThat( id.getUnderlyingMember() ).isNotNull();
-			assertThat( id.getUnderlyingMember().getName() ).isEqualTo( "getId" );
+			assertThat( id.getBackingMember() ).isNotNull();
+			assertThat( id.getBackingMember().getName() ).isEqualTo( "getId" );
 			assertThat( id.getUnderlyingField() ).isNotNull();
 			assertThat( id.getUnderlyingField().getName() ).isEqualTo( "id" );
-			assertThat( id.getUnderlyingGetter() ).isNotNull();
-			assertThat( id.getUnderlyingGetter().getName() ).isEqualTo( "getId" );
-			assertThat( id.getUnderlyingSetter() ).isNotNull();
-			assertThat( id.getUnderlyingSetter().getName() ).isEqualTo( "setId" );
 
-			assertThat( primaryName.getUnderlyingMember() ).isNotNull();
-			assertThat( primaryName.getUnderlyingMember().getName() ).isEqualTo( "getPrimary" );
+			assertThat( primaryName.getBackingMember() ).isNotNull();
+			assertThat( primaryName.getBackingMember().getName() ).isEqualTo( "getPrimaryName" );
 			assertThat( primaryName.getUnderlyingField() ).isNotNull();
 			assertThat( primaryName.getUnderlyingField().getName() ).isEqualTo( "name" );
-			assertThat( primaryName.getUnderlyingGetter() ).isNotNull();
-			assertThat( primaryName.getUnderlyingGetter().getName() ).isEqualTo( "getPrimary" );
-			assertThat( primaryName.getUnderlyingSetter() ).isNotNull();
-			assertThat( primaryName.getUnderlyingSetter().getName() ).isEqualTo( "setPrimary" );
 		} );
 	}
 

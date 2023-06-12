@@ -21,22 +21,18 @@ public class PersistentAttributeImpl implements PersistentAttribute {
 	private final String name;
 	private final AccessType accessType;
 
-	private final MethodDetails underlyingGetter;
-	private final MethodDetails underlyingSetter;
-
-	private FieldDetails underlyingField;
+	private final MemberDetails backingMember;
+	private final FieldDetails underlyingField;
 
 	public PersistentAttributeImpl(
 			String name,
 			AccessType accessType,
-			FieldDetails underlyingField,
-			MethodDetails underlyingGetter,
-			MethodDetails underlyingSetter) {
+			MemberDetails backingMember,
+			FieldDetails underlyingField) {
 		this.name = name;
 		this.accessType = accessType;
+		this.backingMember = backingMember;
 		this.underlyingField = underlyingField;
-		this.underlyingGetter = underlyingGetter;
-		this.underlyingSetter = underlyingSetter;
 	}
 
 	@Override
@@ -52,37 +48,13 @@ public class PersistentAttributeImpl implements PersistentAttribute {
 		return accessType;
 	}
 
-	/**
-	 * Whether {@linkplain  Access @Access} was explicitly
-	 * defined on the attribute member.
-	 */
 	@Override
-	public boolean isAccessTypeExplicit() {
-		return getUnderlyingMember().hasAnnotation( Access.class );
-	}
-
-	@Override
-	public MemberDetails getUnderlyingMember() {
-		return accessType == AccessType.FIELD ? getUnderlyingField() : getUnderlyingGetter();
+	public MemberDetails getBackingMember() {
+		return backingMember;
 	}
 
 	@Override
 	public FieldDetails getUnderlyingField() {
 		return underlyingField;
-	}
-
-	@Override
-	public void setUnderlyingField(FieldDetails underlyingField) {
-		this.underlyingField = underlyingField;
-	}
-
-	@Override
-	public MethodDetails getUnderlyingGetter() {
-		return underlyingGetter;
-	}
-
-	@Override
-	public MethodDetails getUnderlyingSetter() {
-		return underlyingSetter;
 	}
 }
